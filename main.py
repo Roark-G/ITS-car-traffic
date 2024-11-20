@@ -2,7 +2,6 @@ import numpy as np
 import cv2
 from PIL import Image
 
-
 #CONSTANTS
 SIZE_X = 1920
 SIZE_Y = 1080
