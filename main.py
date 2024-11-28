@@ -8,122 +8,112 @@ VIDEO_DURATION = 10
 SIZE_X = 1920
 SIZE_Y = 1080
 
-# SETTINGS
-NUM_CARS = 100
-SPEED = 3
-LOOKAHEAD = 5
-LOOKAHEAD_ANGLE = np.pi / 4
-PULL_EFFECT_STRENGTH = 0.4
-
-# RENDERING
+CAR_SIZE = 10
+ROAD_WIDTH = 10
 CAR_COLOR = [255, 255, 255]
-ROAD_COLOR = [100, 114, 122]
+ROAD_LINE = [245, 230, 27]
+ROAD_PAVEMENT = [110, 109, 104]
 
+cars = []
+roads = []
 
+class Road:
+    def __init__(self, start_x, start_y, end_x, end_y):
+        self.start_x = start_x
+        self.start_y = start_y
+        self.end_x = end_x
+        self.end_y = end_y
 
-class CarSystem:
-    def __init__(self, num_cars):
-        self.num_cars = num_cars
-        # [ x , y , dx , dy , target]
-        self.cars = np.zeros((num_cars, 5), dtype=np.float32)
-        self.cars[:, :2] = np.random.rand(num_cars, 2) * [SIZE_X, SIZE_Y]
-        orientations = np.random.rand(num_cars) * 2 * np.pi
-        self.cars[:, 2] = np.cos(orientations) * SPEED
-        self.cars[:, 3] = np.sin(orientations) * SPEED
+        self.angle = np.arctan2(end_y - start_y, end_x - start_x)
 
-    def load_network(self, file_loc="road_network\Simple.png"):
-        network = np.array(Image.open(file_loc).convert("L"))
-        network = 255 - network
-        self.network = np.where(network > 0, True, False)
+        roads.append(self)
 
-    # def stay_on_road(self):
-    #     # forward vector
-    #     forward_vector = self.agents[:, 2:] * LOOKAHEAD
+    def get_nearest_point(self, x, y):
+        road_vec = np.array([self.end_x - self.start_x, self.end_y - self.start_y])
+        point_vec = np.array([x - self.start_x, y - self.start_y])
+    
+        road_length = np.linalg.norm(road_vec)
+        road_unit = road_vec / road_length
+        projection_length = np.dot(point_vec, road_unit)
 
-    #     # right vector
-    #     right_vector = np.zeros_like(forward_vector)
-    #     right_vector[:, 0] = (forward_vector[:, 0] * np.cos(LOOKAHEAD_ANGLE) - 
-    #                         forward_vector[:, 1] * np.sin(LOOKAHEAD_ANGLE))
-    #     right_vector[:, 1] = (forward_vector[:, 0] * np.sin(LOOKAHEAD_ANGLE) + 
-    #                         forward_vector[:, 1] * np.cos(LOOKAHEAD_ANGLE))
+        projection_length = max(0, min(road_length, projection_length))
+        
+        # Calculate nearest point
+        nearest_x = self.start_x + road_unit[0] * projection_length
+        nearest_y = self.start_y + road_unit[1] * projection_length
+        
+        return nearest_x, nearest_y, self.angle
 
-    #     # left vector
-    #     left_vector = np.zeros_like(forward_vector)
-    #     left_vector[:, 0] = (forward_vector[:, 0] * np.cos(-LOOKAHEAD_ANGLE) - 
-    #                         forward_vector[:, 1] * np.sin(-LOOKAHEAD_ANGLE))
-    #     left_vector[:, 1] = (forward_vector[:, 0] * np.sin(-LOOKAHEAD_ANGLE) + 
-    #                         forward_vector[:, 1] * np.cos(-LOOKAHEAD_ANGLE))
+class Car:
+    def __init__(self, x, y, angle, speed):
+        self.x = x
+        self.y = y
+        self.angle = angle
+        self.speed = speed
+        self.current_road = None
 
-    #     # check in bounds
-    #     def in_bounds(positions):
-    #         return (0 <= positions[:, 0]) & (positions[:, 0] < SIZE_Y) & \
-    #                (0 <= positions[:, 1]) & (positions[:, 1] < SIZE_X)
+        cars.append(self)
 
-    #     forward_pos, right_pos, left_pos = self.agents[:, :2] + forward_vector, self.agents[:, :2] + right_vector, self.agents[:, :2] + left_vector
-    #     forward_mask, right_mask, left_mask = in_bounds(forward_pos), in_bounds(right_pos), in_bounds(left_pos)
+    def find_nearest_road(self):
+        nearest_dist = float('inf')
+        nearest_road = None
+        
+        for road in roads:
+            x, y, _ = road.get_nearest_point(self.x, self.y)
+            dist = np.sqrt((x - self.x)**2 + (y - self.y)**2)
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_road = road
+        
+        return nearest_road
 
-    #     forward_strength, right_strength, left_strength = np.zeros(self.agents.shape[0]), np.zeros(self.agents.shape[0]), np.zeros(self.agents.shape[0])
+    def move(self):
+        self.current_road = self.find_nearest_road()
+        
+        nearest_x, nearest_y, road_angle = self.current_road.get_nearest_point(self.x, self.y)
 
-    #     forward_strength[forward_mask] = self.pheromone_map[
-    #         forward_pos[forward_mask, 0].astype(int),
-    #         forward_pos[forward_mask, 1].astype(int)
-    #     ]
+        self.angle = road_angle
 
-    #     right_strength[right_mask] = self.pheromone_map[
-    #         right_pos[right_mask, 0].astype(int),
-    #         right_pos[right_mask, 1].astype(int)
-    #     ]
+        self.x += self.speed * np.cos(self.angle)
+        self.y += self.speed * np.sin(self.angle)
 
-    #     left_strength[left_mask] = self.pheromone_map[
-    #         left_pos[left_mask, 0].astype(int),
-    #         left_pos[left_mask, 1].astype(int)
-    #     ]
+    def render(self, img):
+        rect_points = cv2.boxPoints((
+            (self.x, self.y),  # Center point
+            (CAR_SIZE * 2, CAR_SIZE),  # Size (length x width)
+            np.degrees(self.angle)  # Angle in degrees
+        ))
+        rect_points = np.int32(rect_points)
+        
+        cv2.fillPoly(img, [rect_points], color=CAR_COLOR)
+        return img
 
-    #     turn_influence = (
-    #         forward_strength[:, np.newaxis] * forward_vector +
-    #         right_strength[:, np.newaxis] * right_vector +
-    #         left_strength[:, np.newaxis] * left_vector
-    #     )
+def update():
+    for car in cars:
+        car.move()
 
-    #     direction_adjustment = turn_influence * PULL_EFFECT_STRENGTH
+def render_frame():
+    img = np.zeros((SIZE_Y, SIZE_X, 3), dtype=np.uint8)
 
-    #     # Update velocity vectors, maintaining the same speed
-    #     new_velocity = self.agents[:, 2:] + direction_adjustment
-    #     speed_magnitude = np.linalg.norm(new_velocity, axis=1, keepdims=True)
-    #     self.agents[:, 2:] = (new_velocity / speed_magnitude) * SPEED
+    for road in roads:
+        cv2.line(img, (int(road.start_x), int(road.start_y)), (int(road.end_x), int(road.end_y)), ROAD_PAVEMENT, 15)        
+        cv2.line(img, (int(road.start_x), int(road.start_y)), (int(road.end_x), int(road.end_y)), ROAD_LINE)
+        
+    for car in cars:
+        car.render(img)
+    
+    return img
 
-    def update(self):
-        self.cars[:, :2] += self.cars[:, 2:4]
-
-        self.cars[:, 2:4] *= np.where((self.cars[:, :2] < 0) | (self.cars[:, :2] > [SIZE_X, SIZE_Y]), -1, 1)
-         
-    def render_roads(self, img):
-        img[self.network] = ROAD_COLOR
-
-    def render_cars(self, img):
-        img[np.clip(self.cars[:, 1].astype(int), 0, SIZE_Y - 1),
-            np.clip(self.cars[:, 0].astype(int), 0, SIZE_X - 1)] = CAR_COLOR
-
-    def render_frame(self, make_img=False):
-            img = np.zeros((SIZE_Y, SIZE_X, 3), dtype=np.uint8)
-
-            self.render_roads(img)
-            self.render_cars(img)
-            
-            self.update()
-
-            return Image.fromarray(img) if make_img else img
-
-def create_video(system, file_output):
+def create_video(file_output, update_funct, render_frame_funct):
     total_frames = FPS * VIDEO_DURATION
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    video = cv2.VideoWriter(fr"videos\{file_output}.mp4", fourcc, FPS, (SIZE_X, SIZE_Y))
+    video = cv2.VideoWriter(f"videos\\{file_output}.mp4", fourcc, FPS, (SIZE_X, SIZE_Y))
 
-    print("Creating video: ")
+    print("Creating video:")
     for frame_num in range(total_frames):
-        frame = system.render_frame()
+        frame = render_frame_funct()
         video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        system.update()
+        update_funct()
         
         # Calculate and display progress
         progress = (frame_num + 1) / total_frames
@@ -137,9 +127,9 @@ def create_video(system, file_output):
     video.release()
 
 if __name__ == "__main__":
-    system = CarSystem(NUM_CARS)
-    system.load_network()
-    # print(system.network)
-    # print(system.network.shape)
-
-    create_video(system, r"test")
+    Car(0, 20, np.pi/4, 5)
+    Car(SIZE_X, 60, np.pi/4, 5)
+    print(Road(0, 20, SIZE_X, 40))
+    print(Road(SIZE_X, 60, 0, 40))
+    
+    create_video("test2", update, render_frame)
