@@ -284,23 +284,6 @@ class Vehicle():
         
         if distance < self.speed * dt and (not target_node.stop or self.speed < 0.1):
             self.node_stack.pop(0)
-    
-    def check_for_collisions(self):
-        """Check for collisions with other vehicles and slow down if needed."""
-        safe_distance = max(self.speed * 1.5, 10)
-        
-        for other in self.simulation.vehicles:
-            if other == self:
-                continue
-
-            distance = np.hypot(other.x - self.x, other.y - self.y)
-            
-            if distance < safe_distance:
-                self.target_speed = 0
-                return
-
-        # If no vehicles are too close, restore normal behavior
-        self.target_speed = self.max_speed
 
     
     def update(self, dt):

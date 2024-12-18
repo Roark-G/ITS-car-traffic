@@ -209,7 +209,7 @@ class Vehicle():
             return np.abs(np.hypot(node.x - goal.x, node.y - goal.y))
         
         open_set = []
-        g_scores = {node: float('inf') for node in self.simulation.road_nodes}
+        g_scores = {node: np.inf for node in self.simulation.road_nodes}
         parents = {}
 
         start_node = min(
@@ -254,9 +254,6 @@ class Vehicle():
         self.speed = max(self.speed - self.acceleration * dt, self.target_speed)
         self.update_braking_distance()
 
-    def update_angle(self):
-        self.angle = np.arctan2(self.true_destination[1] - self.y, self.true_destination[0] - self.x)
-
     def handle_accelerations(self):
         safe_braking_distance = self.braking_distance * 1.5
         distance = self.get_true_destination_dist()
@@ -271,6 +268,9 @@ class Vehicle():
             self.accelerate(dt)
         elif self.speed > self.target_speed:
             self.decelerate(dt)
+
+    def update_angle(self):
+        self.angle = np.arctan2(self.true_destination[1] - self.y, self.true_destination[0] - self.x)
     
     def move(self, dt):
         self.x += self.speed * np.cos(self.angle) * dt
