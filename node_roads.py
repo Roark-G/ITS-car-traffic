@@ -5,6 +5,7 @@ import random
 import heapq
 import time
 from PIL import Image
+from math import sqrt
 
 DEBUG_MODE = True
 
@@ -41,6 +42,9 @@ class Simulation:
     def update(self, dt):
         for vehicle in self.vehicles:
             vehicle.update(dt)
+
+        for node in self.road_nodes:
+            node.update(dt)
     
     def render(self):
         canvas = np.zeros((SIZE_Y, SIZE_X, 3), dtype=np.uint8)
@@ -86,17 +90,42 @@ class Simulation:
             return False
 
 class RoadNode():
-    def __init__(self, x, y, label=None):
+    def __init__(self, x, y, label=None, timing_list : list=None):
         self.x = x
         self.y = y
         self.connections = []
         self.label = label
-
-        self.speed_lims = [] # to be implemented
         self.color = NODE_COLOR
 
+        self.timing_list = timing_list  # [green_time, yellow_time, red_time]
+        self.time_accumulated = 0
+        self.stop = False
+
+        self.speed_lims = [] # to be implemented
+        
+
+    def update(self, dt):
+        if self.timing_list is None:
+            return
+        
+        if self.time_accumulated < self.timing_list[0]:
+            # Green
+            self.stop = False
+            self.color = [0, 255, 0]
+
+        elif self.time_accumulated < self.timing_list[0] + self.timing_list[1]:
+            # Yellow
+            self.stop = True
+            self.color = [255, 255, 0]
+
+        else:
+            # Red
+            self.stop = True
+            self.color = [255, 0, 0]
+        
+        self.time_accumulated = (self.time_accumulated + dt) % sum(self.timing_list)
+        
     def render(self, canvas):
-        # Draw the node as a circle
         cv2.circle(canvas, (int(self.x), int(self.y)), NODE_RADIUS, self.color, 1)
         
         for node in self.connections:
@@ -108,19 +137,18 @@ class RoadNode():
             if RENDER_ARROWS:
                 midpoint = np.array([(self.x + node.x) / 2, (self.y + node.y) / 2])
                 
-                # Calculate the vector representing the direction of the line
                 line_vector = np.array([node.x - self.x, node.y - self.y])
                 line_length = np.linalg.norm(line_vector)
                 
                 if line_length == 0:
-                    continue  # Avoid division by zero for degenerate cases
+                    continue
                 
                 unit_vector = line_vector / line_length
                 
                 perp_vector = np.array([-unit_vector[1], unit_vector[0]])
                 
-                arrow_size = 10  # Length of the arrowhead
-                arrow_tip = midpoint  # Place the arrowhead at the midpoint
+                arrow_size = 10
+                arrow_tip = midpoint
                 left_point = arrow_tip - arrow_size * (unit_vector + 0.5 * perp_vector)
                 right_point = arrow_tip - arrow_size * (unit_vector - 0.5 * perp_vector)
                 
@@ -142,7 +170,7 @@ class RoadNode():
         return f"Node {self.label} at ({self.x}, {self.y})"
 
 class Vehicle():
-    def __init__(self, simulation, x, y, speed=0, max_speed=10, acceleration=1, deceleration=2, render_label=None):
+    def __init__(self, simulation, x, y, speed=0, max_speed=10, acceleration=0.2, deceleration=0.1):
         self.simulation = simulation
         self.x = x
         self.y = y
@@ -153,19 +181,17 @@ class Vehicle():
         self.angle = 0
         self.target_speed = max_speed
 
-        self.braking_distance = max_speed // deceleration
+        self.braking_distance = (self.speed ** 2) / (2 * self.deceleration)
 
         self.node_stack = []
 
-        labels = {"speed": self.speed,
-                  "target_speed":self.target_speed, 
-                  "destination": self.node_stack[0].label if len(self.node_stack) > 0 else None}
-        
-        self.render_label = None if render_label is None else labels[render_label]
+    def update_braking_distance(self):
+        self.braking_distance = (self.speed ** 2) / (2 * self.deceleration)
 
     def a_star_stack(self, destination: RoadNode):
         def heuristic(node, goal):
-            return abs(node.x - goal.x) + abs(node.y - goal.y)
+            '''Euclidean'''
+            return sqrt(abs((node.x - goal.x) ** 2 + (node.y - goal.y) ** 2))
         
         open_set = []
         g_scores = {node: float('inf') for node in self.simulation.road_nodes}
@@ -205,10 +231,13 @@ class Vehicle():
     def accelerate(self, dt):
         if self.speed < self.target_speed:
             self.speed = min(self.speed + self.acceleration * dt, self.max_speed)
-    
+            self.update_braking_distance()
+
     def decelerate(self, dt):
         if self.speed > self.target_speed:
-            self.speed = max(self.speed - self.deceleration * dt, 0)
+            new_speed = self.speed - (self.deceleration * dt)
+            self.speed = max(new_speed, self.target_speed)
+            self.update_braking_distance()
 
     def get_next_node_dist(self):
         target_node = self.node_stack[0]
@@ -218,14 +247,18 @@ class Vehicle():
         target_node = self.node_stack[0]
         self.angle = np.arctan2(target_node.y - self.y, target_node.x - self.x)
 
-    def update_accelerations(self, dist, dt):
+    def update_accelerations(self, distance, dt):
         if len(self.node_stack) == 0:
             raise Exception("No nodes in stack")
 
-        distance = dist
+        target_node = self.node_stack[0]
+        
+        safe_braking_distance = self.braking_distance * 1.5
 
-        if distance < self.braking_distance:
+        if target_node.stop and distance < safe_braking_distance:
             self.target_speed = 0
+        elif distance < safe_braking_distance:
+            self.target_speed = self.max_speed * (distance / safe_braking_distance)
         else:
             self.target_speed = self.max_speed
 
@@ -239,41 +272,58 @@ class Vehicle():
         self.y += self.speed * np.sin(self.angle) * dt
 
     def check_node_arrival(self, dist, dt):
-        ''' Check if the vehicle is within a "reasonable" distance of the node'''
-        target_node = self.node_stack[0]
+        '''Check if the vehicle is within a "reasonable" distance of the node'''
         distance = dist
-        print(f"{distance} from next node")
-        if distance < self.speed * dt:
-            self.x = target_node.x
-            self.y = target_node.y
-            self.node_stack.pop(0)  # Remove the arrived node from the stack
+        print(f"{distance:.2f} from next node")
+
+        target_node = self.node_stack[0]
+        
+        if target_node.stop and distance < self.braking_distance * 1.5:
+            self.target_speed = 0
+            return  # keep node in stack until light changes
+        
+        if distance < self.speed * dt and (not target_node.stop or self.speed < 0.1):
+            self.node_stack.pop(0)
+    
+    def check_for_collisions(self):
+        """Check for collisions with other vehicles and slow down if needed."""
+        safe_distance = max(self.speed * 1.5, 10)
+        
+        for other in self.simulation.vehicles:
+            if other == self:
+                continue
+
+            distance = np.hypot(other.x - self.x, other.y - self.y)
+            
+            if distance < safe_distance:
+                self.target_speed = 0
+                return
+
+        # If no vehicles are too close, restore normal behavior
+        self.target_speed = self.max_speed
+
     
     def update(self, dt):
         if DEBUG_MODE: print(f"\nGoal: {'None' if len(self.node_stack) == 0 else self.node_stack[0]}")
 
-        # First, ensure we have nodes in the stack
         if len(self.node_stack) == 0:
             if DEBUG_MODE: print("performing A* so that there's nodes in stack")
             final_destination = random.choice(self.simulation.road_nodes)
             self.a_star_stack(final_destination)
-            return  # Return here to start fresh next update with new path
+            return
 
-        # Get current distance to next node
         dist = self.get_next_node_dist()
 
-        # Update movement parameters before checking arrival
         self.update_angle()
         self.update_accelerations(dist, dt)
         self.move(dt)
 
-        # Check arrival last, so we don't break the movement calculations
         self.check_node_arrival(dist, dt)
 
     def render(self, canvas):
         # Draw the vehicle as a circle
         cv2.circle(canvas, (int(self.x), int(self.y)), CAR_SIZE, CAR_COLOR, -1)
-        if self.render_label is not None:
-            cv2.putText(canvas, f"{self.speed:.2f}", (int(self.x), int(self.y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CAR_COLOR, 1)
+        cv2.putText(canvas, f"{self.speed:.2f}", (int(self.x), int(self.y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CAR_COLOR, 1)
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -282,14 +332,17 @@ class Vehicle():
     def __setstate__(self, state):
         self.__dict__.update(state)
 
+def conv_to_frames(lst):
+    return [x * FPS for x in lst]
+
 def create_sim(save=True):
     sim = Simulation()
 
     A = RoadNode(10, SIZE_Y//2 - 10, label='A')
     B = RoadNode(10, SIZE_Y//2 + 10, label='B')
     C = RoadNode(SIZE_X//2 - 20, SIZE_Y//2 - 10, label='C')
-    D = RoadNode(SIZE_X//2 - 20, SIZE_Y//2 + 10, label='D')
-    E = RoadNode(SIZE_X//2 + 20, SIZE_Y//2 - 10, label='E')
+    D = RoadNode(SIZE_X//2 - 20, SIZE_Y//2 + 10, label='D', timing_list=conv_to_frames([5, 1, 5]))
+    E = RoadNode(SIZE_X//2 + 20, SIZE_Y//2 - 10, label='E', timing_list=conv_to_frames([5, 1, 5]))
     F = RoadNode(SIZE_X//2 + 20, SIZE_Y//2 + 10, label='F')
     G = RoadNode(SIZE_X//2 - 10, SIZE_Y//2 - 20, label='G')
     H = RoadNode(SIZE_X//2 + 10, SIZE_Y//2 - 20, label='H')
@@ -359,20 +412,10 @@ def create_video(system, file_output, rate):
     video.release()
 
 if __name__ == "__main__":
-    mysim = Simulation()
+    mysim = create_sim(save=False)
 
-    mysim.load_state("three_way_intersection.pkl")
+    mysim.add_vehicle(Vehicle(mysim, 10, SIZE_Y//2 - 10))
+    mysim.add_vehicle(Vehicle(mysim, SIZE_X//2 - 20, SIZE_Y//2 - 10))
+    mysim.add_vehicle(Vehicle(mysim, SIZE_X//2 + 10, 10))
 
-    a = Vehicle(mysim, 10, SIZE_Y//2 - 10, render_label="speed")
-
-    mysim.add_vehicle(a)
-
-    create_video(mysim, r"videos\\three_way_intersection", rate=1)
-
-    # mysim.update(1)
-
-    # frame = mysim.render()
-
-    # cv2.imshow('Simulation Frame', frame)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
+    create_video(mysim, r"videos\\three_way_intersection_1", rate=1)
